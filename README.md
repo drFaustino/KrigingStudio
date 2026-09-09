@@ -307,6 +307,47 @@ Kriging Studio does not provide a QGIS Processing provider.
 
 ---
 
+## Python dependencies
+Kriging Studio uses the following Python scientific-computing libraries for numerical calculations and spatial interpolation:
+
+```text
+import numpy as np
+from scipy.optimize import least_squares
+from scipy.spatial.distance import cdist
+```
+
+### NumPy
+NumPy is used for numerical array operations, matrix calculations, vectorized computations, interpolation grids, and efficient handling of kriging data.
+
+The plugin relies on NumPy for:
+
+- Numerical arrays and matrices
+- Vectorized distance and coordinate calculations
+- Kriging system construction
+- Grid generation and prediction
+- Statistical and numerical operations
+- Memory-efficient handling of large datasets
+
+### SciPy
+SciPy provides numerical optimization and spatial-distance functionality used by the geostatistical algorithms.
+
+Kriging Studio uses:
+
+- scipy.optimize.least_squares for nonlinear least-squares fitting of variogram models
+- scipy.spatial.distance.cdist for efficient pairwise distance calculations between coordinate sets
+
+These components are used particularly during variogram fitting, spatial-neighbourhood calculations, and kriging prediction.
+
+The required imports are:
+
+```text
+import numpy as np
+from scipy.optimize import least_squares
+from scipy.spatial.distance import cdist
+```
+
+The plugin therefore requires a QGIS Python environment with NumPy and SciPy available.
+
 ## Project structure
 
 The project is organised as a standard QGIS plugin and includes the main components required for:

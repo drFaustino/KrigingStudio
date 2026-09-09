@@ -1,0 +1,65 @@
+[general]
+name=Kriging Studio
+
+about=Advanced geostatistical interpolation plugin for QGIS 4.x for spatial analysis of point data using Ordinary and Universal Kriging, with variogram modelling, anisotropy, drift analysis, cross-validation, uncertainty estimation, polygon masking, high-performance GeoTIFF generation, and automatic contour-line extraction.
+
+category=Plugins
+hasProcessingProvider=False
+
+description=Kriging Studio is a comprehensive geostatistical interpolation tool for QGIS 4.x and Qt6. It enables users to perform Ordinary Kriging and Universal Kriging on point datasets, with support for regional linear and quadratic drift components. The plugin includes experimental and fitted variogram analysis with multiple configurable variogram models, anisotropy scaling and direction, and robust prediction workflows.
+
+    Key features include:
+    - Ordinary Kriging for spatial interpolation of point observations.
+    - Universal Kriging with linear and quadratic regional drift.
+    - Experimental variogram calculation and fitted variogram visualization.
+    - Multiple variogram models, including spherical, exponential, Gaussian, linear, power, and hole-effect models.
+    - Configurable anisotropy scaling and direction.
+    - K-fold and leave-one-out cross-validation for model assessment.
+    - Prediction variance and standard-error estimation for uncertainty analysis.
+    - Optional polygon masking for restricting interpolation to a defined area.
+    - High-performance local-neighbourhood and chunked prediction for large datasets and grids.
+    - GeoTIFF raster generation with spatial reference, georeferencing, compression, and Float32 output.
+    - Automatic generation of vector contour lines from kriging prediction rasters.
+    - Optional automatic loading of generated raster and vector outputs directly into QGIS.
+    - Automatic management of raster, variance, and contour outputs.
+    - Progress reporting, cancellation support, and robust handling of large interpolation grids.
+    - Automatic refresh of QGIS layers and numeric attribute fields.
+    - Cross-validation diagnostics and configurable graph visualization.
+    - Multilingual Qt translation support.
+    - Native QGIS 4.x and Qt6 support.
+
+icon=resources/images/icon.svg
+
+tags=kriging,geostatistics,spatial interpolation,variogram,ordinary kriging,universal kriging,anisotropy,drift,cross-validation,uncertainty,prediction variance,standard error,raster,GeoTIFF,contour lines,polygon mask,QGIS
+
+author=Dr. Geol. Faustino Cetraro
+email=geol-faustino@libero.it
+
+homepage=https://github.com/drFaustino/KrigingStudio
+repository=https://github.com/drFaustino/KrigingStudio
+tracker=https://github.com/drFaustino/KrigingStudio
+
+deprecated=False
+experimental=False
+
+qgisMinimumVersion=4.00
+qgisMaximumVersion=4.99
+
+version=1.0.0
+
+changelog=
+    Version 1.0.0:
+        - Initial release of Kriging Studio.
+        - Added Ordinary Kriging interpolation for point datasets.
+        - Added Universal Kriging with regional linear drift.
+        - Added Universal Kriging with quadratic drift.
+        - Added spherical, exponential, Gaussian, linear, power, and hole-effect variogram models.
+        - Added experimental variogram calculation and fitted variogram visualization.
+        - Added configurable anisotropy scaling and direction.
+        - Added k-fold cross-validation.
+        - Added prediction variance and standard-error estimation.
+        - Added optional polygon masking.
+        - Added GeoTIFF raster generation.
+        - Added multilingual support.
+        - Added native QGIS 4.x and Qt6 support.
+        - Removed Processing provider integration.

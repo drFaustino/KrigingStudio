@@ -1,0 +1,96 @@
+<!--?xml version="1.0" encoding="UTF-8"?-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+
+  <defs>
+    <linearGradient id="surface" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0%" stop-color="#155EEF"></stop>
+      <stop offset="45%" stop-color="#12B886"></stop>
+      <stop offset="75%" stop-color="#F59F00"></stop>
+      <stop offset="100%" stop-color="#E03131"></stop>
+    </linearGradient>
+
+    <linearGradient id="glow" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.05"></stop>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0.35"></stop>
+    </linearGradient>
+
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#102A43" flood-opacity="0.25"></feDropShadow>
+    </filter>
+
+    <clipPath id="surfaceClip">
+      <path d="M38 178
+               C61 153 76 143 96 145
+               C117 147 127 121 147 116
+               C167 111 176 91 196 82
+               C207 77 216 75 222 73
+               L222 201
+               L38 201 Z"></path>
+    </clipPath>
+  </defs>
+
+  <!-- Background -->
+  <rect x="18" y="18" width="220" height="220" rx="48" fill="#F8FAFC"></rect>
+
+  <!-- Raster / interpolated surface -->
+  <path d="M38 178
+           C61 153 76 143 96 145
+           C117 147 127 121 147 116
+           C167 111 176 91 196 82
+           C207 77 216 75 222 73
+           L222 201
+           L38 201 Z" fill="url(#surface)" filter="url(#shadow)"></path>
+
+  <!-- Raster grid -->
+  <g clip-path="url(#surfaceClip)" stroke="#FFFFFF" stroke-opacity="0.20" stroke-width="1.5">
+
+    <path d="M38 112 H222"></path>
+    <path d="M38 134 H222"></path>
+    <path d="M38 156 H222"></path>
+    <path d="M38 178 H222"></path>
+
+    <path d="M60 70 V201"></path>
+    <path d="M82 70 V201"></path>
+    <path d="M104 70 V201"></path>
+    <path d="M126 70 V201"></path>
+    <path d="M148 70 V201"></path>
+    <path d="M170 70 V201"></path>
+    <path d="M192 70 V201"></path>
+    <path d="M214 70 V201"></path>
+  </g>
+
+  <!-- Surface highlight -->
+  <path d="M38 178
+           C61 153 76 143 96 145
+           C117 147 127 121 147 116
+           C167 111 176 91 196 82
+           C207 77 216 75 222 73" fill="none" stroke="url(#glow)" stroke-width="7" stroke-linecap="round"></path>
+
+  <!-- Sample points -->
+  <g fill="#FFFFFF" stroke="#123047" stroke-width="4">
+
+    <circle cx="62" cy="166" r="7"></circle>
+    <circle cx="88" cy="143" r="7"></circle>
+    <circle cx="111" cy="158" r="7"></circle>
+    <circle cx="132" cy="126" r="7"></circle>
+    <circle cx="155" cy="109" r="7"></circle>
+    <circle cx="178" cy="96" r="7"></circle>
+    <circle cx="201" cy="76" r="7"></circle>
+
+  </g>
+
+  <!-- Central interpolation node -->
+  <circle cx="145" cy="139" r="13" fill="#FFFFFF" stroke="#123047" stroke-width="5"></circle>
+
+  <circle cx="145" cy="139" r="5" fill="#12B886"></circle>
+
+  <!-- Small variogram / spatial-analysis accent -->
+  <path d="M55 62
+           C72 48 87 48 102 59
+           C116 70 132 70 146 57" fill="none" stroke="#123047" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"></path>
+
+  <circle cx="55" cy="62" r="5" fill="#123047"></circle>
+  <circle cx="102" cy="59" r="5" fill="#123047"></circle>
+  <circle cx="146" cy="57" r="5" fill="#123047"></circle>
+
+</svg>

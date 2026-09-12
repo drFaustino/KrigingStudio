@@ -433,4 +433,10 @@ Cross-validation and uncertainty outputs should be used as diagnostic tools and 
 
 The software does not replace professional geostatistical analysis or domain-specific validation where results are used for scientific, engineering, environmental, regulatory, or decision-making purposes.
 
+---
+
+## Interfaces
+
+<img width="1004" height="880" alt="img1" src="https://github.com/user-attachments/assets/62dc835a-906f-4b73-a40d-31ae11da1564" />
+
 <img width="999" height="882" alt="img2" src="https://github.com/user-attachments/assets/e5e47839-86cf-4265-97f2-e8e8f79b6b45" />

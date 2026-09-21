@@ -186,6 +186,12 @@ It can work directly with:
 
 The plugin can automatically refresh available project layers and numeric fields.
 
+### Z value source
+
+The **Z field** selector supports both numeric attribute fields and a **Geometry Z coordinate** option. The geometry option is available for single-point PointZ, PointZM, and Point25D layers, including layers with no attribute fields. It uses each feature's Z coordinate as the observed value; for PointZM data, the M coordinate is not used.
+
+Features with empty, multipart, missing-Z, or non-finite XY/Z values are skipped. Geometry Z values are interpolated across the layer's XY coordinates: this is two-dimensional surface kriging, not volumetric three-dimensional kriging.
+
 Generated outputs can optionally be added directly to the active QGIS project.
 
 ---

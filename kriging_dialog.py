@@ -15,7 +15,7 @@ from qgis.PyQt.QtWidgets import (
 )
 from qgis.PyQt.QtCore import Qt, QVariant, QCoreApplication
 from qgis.PyQt.QtGui import QColor
-from qgis.gui import QgsMapLayerComboBox, QgsFieldComboBox
+from qgis.gui import QgsMapLayerComboBox
 from osgeo import gdal
 
 from qgis.core import (
@@ -206,9 +206,11 @@ class KrigingDialog(QDialog):
         top_panel.addWidget(self.layer_cb)
 
         top_panel.addWidget(QLabel(self.tr("Z field:")))
-        self.field_cb = QgsFieldComboBox()
+        self.field_cb = QComboBox()
         top_panel.addWidget(self.field_cb)
-        self.layer_cb.layerChanged.connect(self.field_cb.setLayer)
+        self._source_layer = None
+        self.layer_cb.layerChanged.connect(self._on_layer_changed)
+        self._on_layer_changed(self.layer_cb.currentLayer())
 
         self.btn_refresh = QPushButton(self.tr("Refresh"))
         self.btn_refresh.setToolTip(self.tr("Refresh project layers and fields"))
@@ -308,11 +310,61 @@ class KrigingDialog(QDialog):
         if curr > 0:
             self.tabs.setCurrentIndex(curr - 1)
 
+    def _on_layer_changed(self, layer):
+        if self._source_layer is not None:
+            try:
+                self._source_layer.updatedFields.disconnect(self._on_layer_fields_changed)
+            except (RuntimeError, TypeError):
+                pass
+
+        self._source_layer = layer if isinstance(layer, QgsVectorLayer) else None
+        if self._source_layer is not None:
+            self._source_layer.updatedFields.connect(self._on_layer_fields_changed)
+        self._populate_z_sources()
+
+    def _on_layer_fields_changed(self):
+        self._populate_z_sources()
+
+    def _populate_z_sources(self):
+        selected_source = self.field_cb.currentData()
+        layer = self.layer_cb.currentLayer()
+        self.field_cb.blockSignals(True)
+        self.field_cb.clear()
+
+        if isinstance(layer, QgsVectorLayer):
+            for field in layer.fields():
+                self.field_cb.addItem(
+                    field.displayName(),
+                    {"kind": "field", "name": field.name()},
+                )
+
+            wkb_type = layer.wkbType()
+            if (QgsWkbTypes.flatType(wkb_type) == Qgis.WkbType.Point
+                    and QgsWkbTypes.hasZ(wkb_type)):
+                self.field_cb.addItem(
+                    self.tr("Geometry Z coordinate"),
+                    {"kind": "geometry_z"},
+                )
+
+        for index in range(self.field_cb.count()):
+            if self.field_cb.itemData(index) == selected_source:
+                self.field_cb.setCurrentIndex(index)
+                break
+        else:
+            if self.field_cb.count():
+                self.field_cb.setCurrentIndex(0)
+
+        self.field_cb.blockSignals(False)
+        if hasattr(self, "chk_auto_max_dist"):
+            self.recalculate_lag_parameters()
+
+    def _current_z_source(self):
+        source = self.field_cb.currentData()
+        return source if isinstance(source, dict) else None
+
     def refresh_layers_and_fields(self):
         self.layer_cb.setExceptedLayerList([])
-        current_layer = self.layer_cb.currentLayer()
-        if current_layer:
-            self.field_cb.setLayer(current_layer)
+        self._on_layer_changed(self.layer_cb.currentLayer())
 
     def open_autofit_settings_dialog(self):
         dialog = AutoFitDialog(self)
@@ -713,26 +765,35 @@ class KrigingDialog(QDialog):
 
     def get_layer_points(self):
         layer = self.layer_cb.currentLayer()
-        field_name = self.field_cb.currentField()
+        source = self._current_z_source()
 
-        if not layer or not field_name:
+        if not isinstance(layer, QgsVectorLayer) or source is None:
             return None, None
 
         coords, vals = [], []
         for feat in layer.getFeatures():
             geom = feat.geometry()
-            val = feat.attribute(field_name)
-            if not geom or geom.isEmpty() or val is None:
-                continue
-            if QgsWkbTypes.geometryType(geom.wkbType()) != QgsWkbTypes.PointGeometry:
+            if (not geom or geom.isEmpty() or geom.isMultipart()
+                    or QgsWkbTypes.flatType(geom.wkbType()) != Qgis.WkbType.Point):
                 continue
             try:
-                p = geom.asPoint()
-                z = float(val)
-                if np.isfinite(p.x()) and np.isfinite(p.y()) and np.isfinite(z):
-                    coords.append([p.x(), p.y()])
+                if source["kind"] == "geometry_z":
+                    if not QgsWkbTypes.hasZ(geom.wkbType()):
+                        continue
+                    point = geom.constGet()
+                    z = float(point.z())
+                elif source["kind"] == "field":
+                    value = feat.attribute(source["name"])
+                    if value is None:
+                        continue
+                    point = geom.asPoint()
+                    z = float(value)
+                else:
+                    continue
+                if np.isfinite(point.x()) and np.isfinite(point.y()) and np.isfinite(z):
+                    coords.append([point.x(), point.y()])
                     vals.append(z)
-            except (TypeError, ValueError):
+            except (KeyError, TypeError, ValueError):
                 continue
 
         return np.asarray(coords, dtype=float), np.asarray(vals, dtype=float)
@@ -1206,8 +1267,7 @@ class KrigingDialog(QDialog):
             return
 
         layer = self.layer_cb.currentLayer()
-        field_name = self.field_cb.currentField()
-        if not layer or not field_name:
+        if not layer or self._current_z_source() is None:
             QMessageBox.critical(self, self.tr("Error"), self.tr("Please select a valid point layer and Z field."))
             return
 

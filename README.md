@@ -407,10 +407,41 @@ The implementation is intended to provide reliable interpolation while keeping m
 
 Current release:
 
-**Kriging Studio 1.0.0**
+**Kriging Studio 1.1.0**
 
-Although the current metadata version is `1.0.0`, the changelog documents the development history and subsequent internal improvements associated with the project.
+---
 
+## CHANGELOG
+
+### 1.1.0
+
+- **Improvements**
+    - More responsive user interface: Moved computationally intensive operations to background tasks to reduce UI freezing.
+    - Unified progress bar: Retained a single progress bar at the bottom of the window, shared across all processing operations.
+    - Detailed progress reporting: Improved progress updates during interpolation, raster writing, and output generation.
+    - RAutomatic progress bar reset: The progress bar returns to zero after an operation completes.
+    - Processing optimizations: Improved the handling of kriging operations and related data exports.
+
+- **Bug Fixes**
+    - Removed duplicate progress bars from the validation and results tabs.
+    - Updated translation catalogs and added localized messages for the Italian interface.
+
+## 1.1.1
+
+- **Added**
+    - Support for line layers with numeric elevation attributes, including contour lines, as input data for variogram analysis and kriging interpolation.
+    - Automatic extraction of line vertices and assignment of elevation values from the corresponding attribute field.
+
+- **Improved**
+    - Enhanced input layer validation and error handling.
+    - Updated user messages to clarify supported geometry types and elevation field requirements.
+    - Improved handling of invalid elevation values and duplicate samples.
+
+- **Fixed**
+    - Fixed an issue preventing line layers from being used for variogram fitting and kriging interpolation.
+    - Added a warning message when polygon layers are selected, as polygon geometries are not supported.
+    - Updated Italian and English translation files with the new warnings and messages.
+    - Removed unnecessary pass statements from the Python code.
 ---
 
 ## Author
@@ -432,11 +463,3 @@ Kriging Studio is a scientific and geostatistical analysis tool. The quality of 
 Cross-validation and uncertainty outputs should be used as diagnostic tools and interpreted together with knowledge of the study area and the underlying physical or environmental process.
 
 The software does not replace professional geostatistical analysis or domain-specific validation where results are used for scientific, engineering, environmental, regulatory, or decision-making purposes.
-
----
-
-## Interfaces
-
-<img width="1004" height="880" alt="img1" src="https://github.com/user-attachments/assets/62dc835a-906f-4b73-a40d-31ae11da1564" />
-
-<img width="999" height="882" alt="img2" src="https://github.com/user-attachments/assets/e5e47839-86cf-4265-97f2-e8e8f79b6b45" />

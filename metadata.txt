@@ -27,6 +27,7 @@ description=Kriging Studio is a comprehensive geostatistical interpolation tool 
     - Cross-validation diagnostics and configurable graph visualization.
     - Multilingual Qt translation support.
     - Native QGIS 4.x and Qt6 support.
+    - Requires NumPy for numerical calculations, matrix operations, vectorized processing, and interpolation grid generation, and SciPy for variogram fitting, numerical optimization, and efficient spatial-distance calculations.
 
 icon=resources/images/icon.svg
 
@@ -45,7 +46,7 @@ experimental=False
 qgisMinimumVersion=4.00
 qgisMaximumVersion=4.99
 
-version=1.0.0
+version=1.1.1
 
 changelog=
     Version 1.0.0:

@@ -46,21 +46,10 @@ experimental=False
 qgisMinimumVersion=4.00
 qgisMaximumVersion=4.99
 
-version=1.1.1
+version=1.1.2
 
 changelog=
-    Version 1.0.0:
-        - Initial release of Kriging Studio.
-        - Added Ordinary Kriging interpolation for point datasets.
-        - Added Universal Kriging with regional linear drift.
-        - Added Universal Kriging with quadratic drift.
-        - Added spherical, exponential, Gaussian, linear, power, and hole-effect variogram models.
-        - Added experimental variogram calculation and fitted variogram visualization.
-        - Added configurable anisotropy scaling and direction.
-        - Added k-fold cross-validation.
-        - Added prediction variance and standard-error estimation.
-        - Added optional polygon masking.
-        - Added GeoTIFF raster generation.
-        - Added multilingual support.
-        - Added native QGIS 4.x and Qt6 support.
-        - Removed Processing provider integration.
+    Version 1.1.2:
+        - Z source selector: numeric attribute fields or geometry Z coordinate (PointZ, PointZM, Point25D; M is not used).
+        - Point and line vector layer filter with automatic refresh of project layers and numeric fields.
+        - Multi-part, empty, missing and non-finite XY/Z features are ignored; 2D surface kriging only.

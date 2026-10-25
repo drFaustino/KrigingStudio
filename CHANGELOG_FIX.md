@@ -17,3 +17,10 @@
 ## Fix v3
 - Added missing `browse_raster`, `browse_variance`, and `browse_vector` methods used by export-tab buttons.
 - File dialogs now set output paths and add expected `.tif` / `.gpkg` extensions when omitted.
+
+
+## v1.2.0 - QGIS layer integration
+- New `layer_source.py`: `ZSourceComboBox` (numeric fields + geometry Z entry, self-refreshing) and `extract_points`.
+- Geometry Z available for single-part PointZ/PointZM/Point25D layers, also without attribute fields; M ignored; empty, multi-part, missing and non-finite XY/Z skipped.
+- Layer combo filtered to point/line layers; active layer preselected on open.
+- Validation: syntax compilation and a stubbed unit test of the extraction logic. No in-app QGIS testing was possible here.

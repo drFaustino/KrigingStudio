@@ -75,6 +75,8 @@ class KrigingStudioPlugin:
     def run(self):
         if self.dlg is None:
             self.dlg = KrigingDialog(self.iface.mainWindow())
+        # Pick up layers/fields changed in the project and prefer the active layer.
+        self.dlg.refresh_layers_and_fields(self.iface.activeLayer())
         self.dlg.show()
         self.dlg.raise_()
         self.dlg.activateWindow()

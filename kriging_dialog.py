@@ -17,7 +17,7 @@ from qgis.PyQt.QtWidgets import (
 )
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QColor
-from qgis.gui import QgsMapLayerComboBox, QgsFieldComboBox
+from qgis.gui import QgsMapLayerComboBox
 from osgeo import gdal
 
 from qgis.core import QgsTask, QgsApplication, QgsMessageLog
@@ -29,6 +29,9 @@ from qgis.core import (
 )
 
 from .kriging_engine import KrigingEngine
+from .layer_source import (
+    GEOMETRY_Z_KEY, ZSourceComboBox, extract_points, geometry_kind,
+)
 from .variogram_widget import (
     MatplotlibVariogramCanvas, CrossValidationCanvas, SurferPropertyGrid
 )
@@ -252,6 +255,10 @@ class KrigingDialog(QDialog):
                 "GeoPackage (*.gpkg);;ESRI Shapefile (*.shp);;All files (*.*)": "GeoPackage (*.gpkg);;ESRI Shapefile (*.shp);;Tutti i file (*.*)",
                 "GeoTIFF raster (*.tif *.tiff);;All files (*.*)": "Raster GeoTIFF (*.tif *.tiff);;Tutti i file (*.*)",
                 "Kriging": "Kriging",
+                "Valid samples: %1 of %2 features": "Campioni validi: %1 su %2 feature",
+                "Z from geometry (2D surface kriging)": "Z dalla geometria (kriging di superficie 2D)",
+                "Numeric attribute field, or the Z coordinate of the geometry (single-part PointZ, PointZM and Point25D layers).": "Campo attributo numerico oppure coordinata Z della geometria (layer a punto singolo PointZ, PointZM e Point25D).",
+                "Please select a valid point or line layer and a Z source (numeric field or geometry Z).": "Seleziona un layer puntuale o lineare valido e una sorgente Z (campo numerico o Z della geometria).",
                 "Next >": "Avanti >",
                 "< Back": "< Indietro",
                 "Variogram AutoFit": "Adattamento automatico del variogramma",
@@ -328,13 +335,18 @@ class KrigingDialog(QDialog):
         top_panel = QHBoxLayout()
         top_panel.addWidget(QLabel(self.tr("Input layer:")))
         self.layer_cb = QgsMapLayerComboBox()
-        top_panel.addWidget(self.layer_cb)
+        self._apply_layer_filters()
+        top_panel.addWidget(self.layer_cb, stretch=1)
 
         top_panel.addWidget(QLabel(self.tr("Z field:")))
-        self.field_cb = QgsFieldComboBox()
-        top_panel.addWidget(self.field_cb)
+        self.field_cb = ZSourceComboBox()
+        self.field_cb.setToolTip(self.tr(
+            "Numeric attribute field, or the Z coordinate of the geometry "
+            "(single-part PointZ, PointZM and Point25D layers)."))
+        top_panel.addWidget(self.field_cb, stretch=1)
         self.layer_cb.layerChanged.connect(self.field_cb.setLayer)
         self.layer_cb.layerChanged.connect(self.on_input_layer_changed)
+        self.field_cb.setLayer(self.layer_cb.currentLayer())
 
         self.btn_refresh = QPushButton(self.tr("Refresh"))
         self.btn_refresh.setToolTip(self.tr("Refresh project layers and fields"))
@@ -343,6 +355,9 @@ class KrigingDialog(QDialog):
         top_panel.addWidget(self.btn_refresh)
 
         main_layout.addLayout(top_panel)
+        self.lbl_source_info = QLabel("")
+        self.lbl_source_info.setStyleSheet("color: #555555;")
+        main_layout.addWidget(self.lbl_source_info)
 
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet("""
@@ -443,12 +458,21 @@ class KrigingDialog(QDialog):
         if curr > 0:
             self.tabs.setCurrentIndex(curr - 1)
 
+    def _apply_layer_filters(self):
+        """Show only vector layers that can supply samples: point and line layers."""
+        try:
+            flt = Qgis.LayerFilter.PointLayer | Qgis.LayerFilter.LineLayer
+        except AttributeError:  # older API
+            from qgis.core import QgsMapLayerProxyModel
+            flt = QgsMapLayerProxyModel.PointLayer | QgsMapLayerProxyModel.LineLayer
+        self.layer_cb.setFilters(flt)
+        self.layer_cb.setAllowEmptyLayer(False)
+
     def on_input_layer_changed(self, layer):
         """Warn and reject polygon layers; only point and line inputs are supported."""
         if not layer or not isinstance(layer, QgsVectorLayer):
             return
-        geometry_type = QgsWkbTypes.geometryType(layer.wkbType())
-        if geometry_type == QgsWkbTypes.PolygonGeometry:
+        if geometry_kind(layer) == "polygon":
             QMessageBox.warning(
                 self,
                 self.tr("Unsupported layer type"),
@@ -456,11 +480,18 @@ class KrigingDialog(QDialog):
             )
             self.field_cb.setLayer(None)
 
-    def refresh_layers_and_fields(self):
+    def refresh_layers_and_fields(self, preferred_layer=None):
+        """Re-read project layers and the numeric fields of the selected layer.
+
+        ``preferred_layer`` (e.g. the active QGIS layer) is selected when it is a
+        point or line vector layer that the selector lists.
+        """
         self.layer_cb.setExceptedLayerList([])
-        current_layer = self.layer_cb.currentLayer()
-        if current_layer:
-            self.field_cb.setLayer(current_layer)
+        self._apply_layer_filters()
+        if isinstance(preferred_layer, QgsVectorLayer):
+            self.layer_cb.setLayer(preferred_layer)  # ignored if filtered out
+        self.field_cb.setLayer(self.layer_cb.currentLayer())
+        self.recalculate_lag_parameters()
 
     def open_autofit_settings_dialog(self):
         dialog = AutoFitDialog(self)
@@ -728,6 +759,7 @@ class KrigingDialog(QDialog):
         self.spin_n_lags.valueChanged.connect(self.recalculate_lag_parameters)
         self.txt_max_dist.textChanged.connect(self.recalculate_lag_parameters)
         self.layer_cb.layerChanged.connect(self.recalculate_lag_parameters)
+        self.field_cb.sourceChanged.connect(self.recalculate_lag_parameters)
 
         layout.addLayout(left_layout, stretch=2)
         layout.addLayout(right_layout, stretch=1)
@@ -874,51 +906,39 @@ class KrigingDialog(QDialog):
         QMessageBox.information(self, self.tr("AutoFit"), self.tr("Variogram parameters fitted successfully."))
 
     def get_layer_points(self):
+        """Return (coords, values) from the selected layer and Z source.
+
+        The Z source is a numeric attribute field or, for single-part point
+        layers with Z values, the geometry Z coordinate (``GEOMETRY_Z_KEY``).
+        Features with empty, multi-part (geometry Z), missing or non-finite
+        XY/Z values are ignored.
+        """
         layer = self.layer_cb.currentLayer()
-        field_name = self.field_cb.currentField()
+        source = self.field_cb.currentField()
 
-        if not layer or not field_name or not isinstance(layer, QgsVectorLayer):
+        if not layer or not source or not isinstance(layer, QgsVectorLayer):
+            self._show_source_info(None)
             return None, None
+        try:
+            coords, vals, stats = extract_points(layer, source)
+        except ValueError as exc:
+            self._show_source_info(None, str(exc))
+            return None, None
+        self._show_source_info(stats)
+        return coords, vals
 
-        geometry_type = QgsWkbTypes.geometryType(layer.wkbType())
-        if geometry_type not in (QgsWkbTypes.PointGeometry, QgsWkbTypes.LineGeometry):
-            return np.empty((0, 2), dtype=float), np.empty(0, dtype=float)
-
-        coords, vals = [], []
-        seen = set()
-        for feat in layer.getFeatures():
-            geom = feat.geometry()
-            val = feat.attribute(field_name)
-            if not geom or geom.isEmpty() or val is None:
-                continue
-            try:
-                z = float(val)
-            except (TypeError, ValueError):
-                continue
-            if not np.isfinite(z):
-                continue
-
-            try:
-                if geometry_type == QgsWkbTypes.PointGeometry:
-                    points = [geom.asPoint()] if not geom.isMultipart() else geom.asMultiPoint()
-                else:
-                    # vertices() also handles multipart lines and curved geometries
-                    # after QGIS exposes their vertices through the geometry iterator.
-                    points = list(geom.vertices())
-                for point in points:
-                    x, y = float(point.x()), float(point.y())
-                    if not (np.isfinite(x) and np.isfinite(y)):
-                        continue
-                    key = (x, y, z)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    coords.append([x, y])
-                    vals.append(z)
-            except (TypeError, ValueError, AttributeError):
-                continue
-
-        return np.asarray(coords, dtype=float).reshape((-1, 2)), np.asarray(vals, dtype=float)
+    def _show_source_info(self, stats, message=""):
+        if not hasattr(self, "lbl_source_info"):
+            return
+        if message:
+            self.lbl_source_info.setText(message)
+        elif stats is None:
+            self.lbl_source_info.setText("")
+        else:
+            text = self.tr("Valid samples: %1 of %2 features").replace("%1", str(stats["used"])).replace("%2", str(stats["total"]))
+            if self.field_cb.isGeometryZ():
+                text += " — " + self.tr("Z from geometry (2D surface kriging)")
+            self.lbl_source_info.setText(text)
 
     def remove_trend(self, coords, vals, trend_type):
         if trend_type == "None" or len(coords) < 6:
@@ -1371,7 +1391,7 @@ class KrigingDialog(QDialog):
         layer = self.layer_cb.currentLayer()
         field_name = self.field_cb.currentField()
         if not layer or not field_name:
-            QMessageBox.critical(self, self.tr("Error"), self.tr("Please select a valid point or line layer and Z field."))
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Please select a valid point or line layer and a Z source (numeric field or geometry Z)."))
             return
         coords, vals = self.get_layer_points()
         if coords is None or len(coords) < 3:

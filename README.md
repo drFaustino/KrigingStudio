@@ -184,7 +184,17 @@ It can work directly with:
 - Project layers
 - QGIS coordinate reference systems
 
-The plugin can automatically refresh available project layers and numeric fields.
+The plugin automatically refreshes the available project layers and numeric fields: the layer selector lists only point and line vector layers of the project, and the Z selector updates itself when the fields of the layer change or the layer is removed. The **Refresh** button forces a manual update, and opening the dialog selects the active QGIS layer when it is a point or line layer.
+
+### Z value source
+
+The **Z field** selector supports both numeric attribute fields and a **geometry Z coordinate** option.
+
+- The geometry option is available for single-part point layers with Z values: `PointZ`, `PointZM` and `Point25D`, including layers without attribute fields.
+- It uses the Z coordinate of each feature as the observed value. For `PointZM` data the M coordinate is not used.
+- Features with empty, multi-part, missing or non-finite XY/Z values are ignored.
+- Geometry Z values are interpolated along the layer XY coordinates: this is **2D surface kriging**, not 3D volumetric kriging.
+- The number of valid samples is shown under the layer selectors.
 
 Generated outputs can optionally be added directly to the active QGIS project.
 
@@ -407,9 +417,57 @@ The implementation is intended to provide reliable interpolation while keeping m
 
 Current release:
 
-**Kriging Studio 1.0.0**
+**Kriging Studio 1.2.0**
 
-Although the current metadata version is `1.0.0`, the changelog documents the development history and subsequent internal improvements associated with the project.
+---
+
+## CHANGELOG
+
+### 1.1.0
+
+- **Improvements**
+    - More responsive user interface: Moved computationally intensive operations to background tasks to reduce UI freezing.
+    - Unified progress bar: Retained a single progress bar at the bottom of the window, shared across all processing operations.
+    - Detailed progress reporting: Improved progress updates during interpolation, raster writing, and output generation.
+    - RAutomatic progress bar reset: The progress bar returns to zero after an operation completes.
+    - Processing optimizations: Improved the handling of kriging operations and related data exports.
+
+- **Bug Fixes**
+    - Removed duplicate progress bars from the validation and results tabs.
+    - Updated translation catalogs and added localized messages for the Italian interface.
+
+## 1.1.1
+
+- **Added**
+    - Support for line layers with numeric elevation attributes, including contour lines, as input data for variogram analysis and kriging interpolation.
+    - Automatic extraction of line vertices and assignment of elevation values from the corresponding attribute field.
+
+- **Improved**
+    - Enhanced input layer validation and error handling.
+    - Updated user messages to clarify supported geometry types and elevation field requirements.
+    - Improved handling of invalid elevation values and duplicate samples.
+
+## 1.1.2
+
+- **Added**
+    - Support for line layers with numeric elevation attributes, including contour lines, as input data for variogram analysis and kriging interpolation.
+    - Automatic extraction of line vertices and assignment of elevation values from the corresponding attribute field.
+
+- **Improved**
+    - Enhanced input layer validation and error handling.
+    - Updated user messages to clarify supported geometry types and elevation field requirements.
+    - Improved handling of invalid elevation values and duplicate samples.
+
+- **Fixed**
+    - Fixed an issue preventing line layers from being used for variogram fitting and kriging interpolation.
+    - Added a warning message when polygon layers are selected, as polygon geometries are not supported.
+    - Updated Italian and English translation files with the new warnings and messages.
+    - Removed unnecessary pass statements from the Python code.
+
+- **Added**
+    - Z source selector with numeric attribute fields and the geometry Z coordinate of PointZ, PointZM and Point25D layers (also for layers without attribute fields).
+    - Layer selector restricted to point and line vector layers; automatic refresh of layers and numeric fields; the active layer is preselected when the dialog opens.
+    - Valid-sample counter under the layer selectors.
 
 ---
 
@@ -432,11 +490,3 @@ Kriging Studio is a scientific and geostatistical analysis tool. The quality of 
 Cross-validation and uncertainty outputs should be used as diagnostic tools and interpreted together with knowledge of the study area and the underlying physical or environmental process.
 
 The software does not replace professional geostatistical analysis or domain-specific validation where results are used for scientific, engineering, environmental, regulatory, or decision-making purposes.
-
----
-
-## Interfaces
-
-<img width="1004" height="880" alt="img1" src="https://github.com/user-attachments/assets/62dc835a-906f-4b73-a40d-31ae11da1564" />
-
-<img width="999" height="882" alt="img2" src="https://github.com/user-attachments/assets/e5e47839-86cf-4265-97f2-e8e8f79b6b45" />

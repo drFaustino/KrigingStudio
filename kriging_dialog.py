@@ -1,22 +1,26 @@
-from qgis.PyQt.QtWidgets import QDialog, QFormLayout, QComboBox, QDoubleSpinBox, QSpinBox, QListWidget, QVBoxLayout, QDialogButtonBox, QLabel, QTableWidget, QTableWidgetItem, QPushButton
-from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtWidgets import (
+    QFormLayout, QListWidget, QDialogButtonBox, QHBoxLayout, QTabWidget,
+    QWidget, QHeaderView, QTreeWidget, QTreeWidgetItem, QLineEdit, QCheckBox,
+    QFileDialog, QGroupBox, QProgressBar, QMessageBox, QTextEdit, QColorDialog,
+)
+from qgis.PyQt.QtCore import QVariant, QCoreApplication, QObject, pyqtSignal, QTimer
 import csv
+import copy
 import os
 import numpy as np
 import matplotlib.pyplot as plt
 import processing
 
 from qgis.PyQt.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget,
-    QPushButton, QLabel, QComboBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QTreeWidget, QTreeWidgetItem, QLineEdit, QCheckBox,
-    QFileDialog, QGroupBox, QSpinBox, QDoubleSpinBox, QProgressBar,
-    QMessageBox, QTextEdit, QColorDialog
+    QDialog, QVBoxLayout, QPushButton, QLabel, QComboBox, QTableWidget,
+    QTableWidgetItem, QSpinBox, QDoubleSpinBox,
 )
-from qgis.PyQt.QtCore import Qt, QVariant, QCoreApplication
+from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QColor
-from qgis.gui import QgsMapLayerComboBox, QgsFieldComboBox
+from qgis.gui import QgsMapLayerComboBox
 from osgeo import gdal
+
+from qgis.core import QgsTask, QgsApplication, QgsMessageLog
 
 from qgis.core import (
     QgsProject, QgsVectorLayer, QgsRasterLayer, QgsPointXY,
@@ -25,6 +29,9 @@ from qgis.core import (
 )
 
 from .kriging_engine import KrigingEngine
+from .layer_source import (
+    GEOMETRY_Z_KEY, ZSourceComboBox, extract_points, geometry_kind,
+)
 from .variogram_widget import (
     MatplotlibVariogramCanvas, CrossValidationCanvas, SurferPropertyGrid
 )
@@ -129,9 +136,134 @@ class AutoFitDialog(QDialog):
         }
 
 
+
+
+class _KrigingGridTask(QgsTask):
+    """CPU-heavy interpolation executed off the GUI thread."""
+    def __init__(self, description, engine, coords, values, grid_x, grid_y,
+                 return_variance, max_neighbors, callback):
+        super().__init__(description, QgsTask.CanCancel)
+        self.engine = engine
+        self.coords = np.asarray(coords, dtype=float)
+        self.values = np.asarray(values, dtype=float)
+        self.grid_x = grid_x
+        self.grid_y = grid_y
+        self.return_variance = return_variance
+        self.max_neighbors = max_neighbors
+        self.callback = callback
+        self.predictions = self.variances = None
+        self.error_message = ""
+        self.progress_signal = _TaskSignals()
+
+    def run(self):
+        try:
+            def progress(v):
+                if self.isCanceled():
+                    raise RuntimeError("Operation cancelled.")
+                self.setProgress(float(v))
+                self.progress_signal.progress.emit(int(v), "Kriging: %d%%" % int(v))
+            self.predictions, self.variances = self.engine.fit_and_predict(
+                self.coords, self.values, self.grid_x, self.grid_y,
+                return_variance=self.return_variance,
+                max_neighbors=self.max_neighbors,
+                progress_callback=progress
+            )
+            return not self.isCanceled()
+        except Exception as exc:
+            self.error_message = str(exc)
+            return False
+
+    def finished(self, result):
+        # QgsTask.finished runs on the main thread; only UI/QGIS project
+        # operations are performed here.
+        self.callback(self, bool(result))
+
+
+class _TaskSignals(QObject):
+    progress = pyqtSignal(int, str)
+
+
+class _BackgroundOperationTask(QgsTask):
+    """Run CPU/I/O-heavy plugin operations away from QGIS' GUI thread."""
+    def __init__(self, description, operation, finished_callback):
+        super().__init__(description, QgsTask.CanCancel)
+        self.operation = operation
+        self.finished_callback = finished_callback
+        self.signals = _TaskSignals()
+        self.result_data = None
+        self.error_message = ""
+
+    def run(self):
+        try:
+            def report(value, message="Working…"):
+                if self.isCanceled():
+                    raise RuntimeError("Operation cancelled.")
+                value = max(0, min(100, int(value)))
+                self.setProgress(value)
+                self.signals.progress.emit(value, str(message))
+            self.result_data = self.operation(report, self.isCanceled)
+            return not self.isCanceled()
+        except Exception as exc:
+            self.error_message = str(exc)
+            return False
+
+    def finished(self, result):
+        self.finished_callback(self, bool(result))
+
+
 class KrigingDialog(QDialog):
     def tr(self, text):
-        return QCoreApplication.translate("KrigingDialog", text)
+        translated = QCoreApplication.translate("KrigingDialog", text)
+        if translated != text:
+            return translated
+        # Runtime fallback keeps recently added messages translated even when the
+        # installed .qm file was built from an older translation catalog.
+        from qgis.PyQt.QtCore import QLocale
+        if QLocale.system().name().lower().startswith("it"):
+            return {
+                "Ready": "Pronto",
+                "Calculating experimental variogram…": "Calcolo del variogramma sperimentale…",
+                "Calculating kriging grid…": "Calcolo della griglia di kriging…",
+                "Calculation failed or cancelled": "Calcolo non riuscito o annullato",
+                "Cross-validation running…": "Convalida incrociata in corso…",
+                "Cross-validation: %1%": "Convalida incrociata: %1%",
+                "Experimental variogram": "Variogramma sperimentale",
+                "Fitting variogram model…": "Adattamento del modello di variogramma…",
+                "Generating contour lines…": "Generazione delle curve di livello…",
+                "Kriging interpolation": "Interpolazione kriging",
+                "Operation failed or cancelled": "Operazione non riuscita o annullata",
+                "Optimizing variogram parameters…": "Ottimizzazione dei parametri del variogramma…",
+                "Output error": "Errore di output",
+                "Output failed": "Generazione degli output non riuscita",
+                "Output files completed": "File di output completati",
+                "Save contour lines": "Salva curve di livello",
+                "Save interpolated raster": "Salva raster interpolato",
+                "Save kriging variance": "Salva varianza del kriging",
+                "Updating variogram plot…": "Aggiornamento del grafico del variogramma…",
+                "Variogram AutoFit": "Adattamento automatico del variogramma",
+                "Variogram failed": "Calcolo del variogramma non riuscito",
+                "Writing interpolated raster…": "Scrittura del raster interpolato…",
+                "Writing kriging outputs": "Scrittura degli output del kriging",
+                "Writing raster and contour outputs…": "Scrittura del raster e delle curve di livello…",
+                "Writing variance raster…": "Scrittura del raster della varianza…",
+                "A calculation is already running.": "È già in corso un calcolo.",
+                "Another operation is already running.": "È già in corso un'altra operazione.",
+                "AutoFit failed": "AutoFit non riuscito",
+                "Wait for the current operation to finish before clearing results.": "Attendi il completamento dell'operazione corrente prima di cancellare i risultati.",
+                "Contour vector output requires Save Raster File.": "L'output vettoriale delle curve di livello richiede di selezionare il salvataggio del raster.",
+                "Contour vector output requires 'Save Raster File' to be selected.": "Per generare le curve di livello vettoriali è necessario selezionare 'Save Raster File'.",
+                "GeoPackage (*.gpkg);;ESRI Shapefile (*.shp);;All files (*.*)": "GeoPackage (*.gpkg);;ESRI Shapefile (*.shp);;Tutti i file (*.*)",
+                "GeoTIFF raster (*.tif *.tiff);;All files (*.*)": "Raster GeoTIFF (*.tif *.tiff);;Tutti i file (*.*)",
+                "Kriging": "Kriging",
+                "Valid samples: %1 of %2 features": "Campioni validi: %1 su %2 feature",
+                "Z from geometry (2D surface kriging)": "Z dalla geometria (kriging di superficie 2D)",
+                "Numeric attribute field, or the Z coordinate of the geometry (single-part PointZ, PointZM and Point25D layers).": "Campo attributo numerico oppure coordinata Z della geometria (layer a punto singolo PointZ, PointZM e Point25D).",
+                "Please select a valid point or line layer and a Z source (numeric field or geometry Z).": "Seleziona un layer puntuale o lineare valido e una sorgente Z (campo numerico o Z della geometria).",
+                "Next >": "Avanti >",
+                "< Back": "< Indietro",
+                "Variogram AutoFit": "Adattamento automatico del variogramma",
+            }.get(text, text)
+        return translated
 
     """UI main with 3 Tabs and advanced Surfer options for variogram."""
 
@@ -203,12 +335,18 @@ class KrigingDialog(QDialog):
         top_panel = QHBoxLayout()
         top_panel.addWidget(QLabel(self.tr("Input layer:")))
         self.layer_cb = QgsMapLayerComboBox()
-        top_panel.addWidget(self.layer_cb)
+        self._apply_layer_filters()
+        top_panel.addWidget(self.layer_cb, stretch=1)
 
         top_panel.addWidget(QLabel(self.tr("Z field:")))
-        self.field_cb = QgsFieldComboBox()
-        top_panel.addWidget(self.field_cb)
+        self.field_cb = ZSourceComboBox()
+        self.field_cb.setToolTip(self.tr(
+            "Numeric attribute field, or the Z coordinate of the geometry "
+            "(single-part PointZ, PointZM and Point25D layers)."))
+        top_panel.addWidget(self.field_cb, stretch=1)
         self.layer_cb.layerChanged.connect(self.field_cb.setLayer)
+        self.layer_cb.layerChanged.connect(self.on_input_layer_changed)
+        self.field_cb.setLayer(self.layer_cb.currentLayer())
 
         self.btn_refresh = QPushButton(self.tr("Refresh"))
         self.btn_refresh.setToolTip(self.tr("Refresh project layers and fields"))
@@ -217,6 +355,9 @@ class KrigingDialog(QDialog):
         top_panel.addWidget(self.btn_refresh)
 
         main_layout.addLayout(top_panel)
+        self.lbl_source_info = QLabel("")
+        self.lbl_source_info.setStyleSheet("color: #555555;")
+        main_layout.addWidget(self.lbl_source_info)
 
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet("""
@@ -274,6 +415,15 @@ class KrigingDialog(QDialog):
 
         main_layout.addWidget(self.tabs)
 
+        # Persistent progress indicator, independent of the currently selected tab.
+        self.progress_label_bottom = QLabel(self.tr("Ready"))
+        self.progress_bar_bottom = QProgressBar()
+        self.progress_bar_bottom.setRange(0, 100)
+        self.progress_bar_bottom.setValue(0)
+        self.progress_bar_bottom.setTextVisible(True)
+        main_layout.addWidget(self.progress_label_bottom)
+        main_layout.addWidget(self.progress_bar_bottom)
+
         btn_layout = QHBoxLayout()
         self.btn_back = QPushButton(self.tr("< Back"))
         self.btn_next = QPushButton(self.tr("Next >"))
@@ -308,11 +458,40 @@ class KrigingDialog(QDialog):
         if curr > 0:
             self.tabs.setCurrentIndex(curr - 1)
 
-    def refresh_layers_and_fields(self):
+    def _apply_layer_filters(self):
+        """Show only vector layers that can supply samples: point and line layers."""
+        try:
+            flt = Qgis.LayerFilter.PointLayer | Qgis.LayerFilter.LineLayer
+        except AttributeError:  # older API
+            from qgis.core import QgsMapLayerProxyModel
+            flt = QgsMapLayerProxyModel.PointLayer | QgsMapLayerProxyModel.LineLayer
+        self.layer_cb.setFilters(flt)
+        self.layer_cb.setAllowEmptyLayer(False)
+
+    def on_input_layer_changed(self, layer):
+        """Warn and reject polygon layers; only point and line inputs are supported."""
+        if not layer or not isinstance(layer, QgsVectorLayer):
+            return
+        if geometry_kind(layer) == "polygon":
+            QMessageBox.warning(
+                self,
+                self.tr("Unsupported layer type"),
+                self.tr("Polygon layers are not supported. Select a point layer or a line layer with a numeric elevation field.")
+            )
+            self.field_cb.setLayer(None)
+
+    def refresh_layers_and_fields(self, preferred_layer=None):
+        """Re-read project layers and the numeric fields of the selected layer.
+
+        ``preferred_layer`` (e.g. the active QGIS layer) is selected when it is a
+        point or line vector layer that the selector lists.
+        """
         self.layer_cb.setExceptedLayerList([])
-        current_layer = self.layer_cb.currentLayer()
-        if current_layer:
-            self.field_cb.setLayer(current_layer)
+        self._apply_layer_filters()
+        if isinstance(preferred_layer, QgsVectorLayer):
+            self.layer_cb.setLayer(preferred_layer)  # ignored if filtered out
+        self.field_cb.setLayer(self.layer_cb.currentLayer())
+        self.recalculate_lag_parameters()
 
     def open_autofit_settings_dialog(self):
         dialog = AutoFitDialog(self)
@@ -580,6 +759,7 @@ class KrigingDialog(QDialog):
         self.spin_n_lags.valueChanged.connect(self.recalculate_lag_parameters)
         self.txt_max_dist.textChanged.connect(self.recalculate_lag_parameters)
         self.layer_cb.layerChanged.connect(self.recalculate_lag_parameters)
+        self.field_cb.sourceChanged.connect(self.recalculate_lag_parameters)
 
         layout.addLayout(left_layout, stretch=2)
         layout.addLayout(right_layout, stretch=1)
@@ -587,7 +767,9 @@ class KrigingDialog(QDialog):
         self.recalculate_lag_parameters()
 
     def on_point_size_changed(self, size):
-        pass
+        # Connected to size controls; plot refresh occurs when the associated
+        # variogram/value plot is redrawn. Keep this slot intentionally harmless.
+        return None
 
     def _set_color_button(self, button, color_name):
         color = QColor(color_name)
@@ -686,56 +868,77 @@ class KrigingDialog(QDialog):
         self.on_calculate_variogram()
 
     def open_autofit_dialog(self):
+        if getattr(self, "_operation_task", None) is not None:
+            return
         coords, vals = self.get_layer_points()
         if coords is None or len(coords) < 3:
             QMessageBox.warning(self, self.tr("AutoFit"), self.tr("At least three valid points are required to fit a variogram."))
             return
         self._configure_engine()
-        try:
-            residuals = self.remove_trend(coords, vals, self.cb_trend.currentData() or "None")
-            lags, gamma, counts = self.engine.calculate_experimental_variogram(
-                coords, residuals,
-                n_lags=self.spin_n_lags.value(),
-                max_dist=float(self.txt_max_dist.text().replace(",", ".")),
-                lag_width=float(self.txt_lag_size.text().replace(",", ".")),
-                direction=self.spin_dir.value(),
-                tolerance=self.spin_tol.value(),
-            )
+        engine = copy.deepcopy(self.engine)
+        residuals = self.remove_trend(coords, vals, self.cb_trend.currentData() or "None")
+        params = (self.spin_n_lags.value(), float(self.txt_max_dist.text().replace(",", ".")),
+                  float(self.txt_lag_size.text().replace(",", ".")), self.spin_dir.value(), self.spin_tol.value())
+        self._set_operation_busy(True, self.tr("Fitting variogram model…"))
+        def operation(report, cancelled):
+            report(5, self.tr("Calculating experimental variogram…"))
+            lags, gamma, counts = engine.calculate_experimental_variogram(coords, residuals,
+                n_lags=params[0], max_dist=params[1], lag_width=params[2], direction=params[3], tolerance=params[4])
             if len(lags) < 2:
                 raise ValueError("Not enough experimental variogram pairs are available.")
-            if not self.engine.autofit(lags, gamma, counts):
+            report(60, self.tr("Optimizing variogram parameters…"))
+            if cancelled(): raise RuntimeError("Operation cancelled.")
+            if not engine.autofit(lags, gamma, counts):
                 raise ValueError("The variogram fit did not converge.")
-            self.spin_nugget.setValue(float(self.engine.nugget))
-            QMessageBox.information(self, self.tr("AutoFit"), self.tr("Variogram parameters fitted successfully."))
-            self.on_calculate_variogram()
-        except Exception as exc:
-            QMessageBox.critical(self, self.tr("AutoFit"), self.tr("Automatic variogram fitting failed:") + f" {exc}")
+            return (engine.nugget, engine.sill, engine.range_val, engine.slope, engine.scale, engine.exponent)
+        self._start_background_operation(self.tr("Variogram AutoFit"), operation, self._finish_autofit)
+
+    def _finish_autofit(self, task, success):
+        self._operation_task = None
+        self._set_operation_busy(False, self.tr("Completed") if success else self.tr("AutoFit failed"))
+        if not success:
+            if task.error_message and task.error_message != "Operation cancelled.":
+                QMessageBox.critical(self, self.tr("AutoFit"), task.error_message)
+            return
+        self.engine.nugget, self.engine.sill, self.engine.range_val, self.engine.slope, self.engine.scale, self.engine.exponent = task.result_data
+        self.spin_nugget.setValue(float(self.engine.nugget))
+        self.on_calculate_variogram()
+        QMessageBox.information(self, self.tr("AutoFit"), self.tr("Variogram parameters fitted successfully."))
 
     def get_layer_points(self):
+        """Return (coords, values) from the selected layer and Z source.
+
+        The Z source is a numeric attribute field or, for single-part point
+        layers with Z values, the geometry Z coordinate (``GEOMETRY_Z_KEY``).
+        Features with empty, multi-part (geometry Z), missing or non-finite
+        XY/Z values are ignored.
+        """
         layer = self.layer_cb.currentLayer()
-        field_name = self.field_cb.currentField()
+        source = self.field_cb.currentField()
 
-        if not layer or not field_name:
+        if not layer or not source or not isinstance(layer, QgsVectorLayer):
+            self._show_source_info(None)
             return None, None
+        try:
+            coords, vals, stats = extract_points(layer, source)
+        except ValueError as exc:
+            self._show_source_info(None, str(exc))
+            return None, None
+        self._show_source_info(stats)
+        return coords, vals
 
-        coords, vals = [], []
-        for feat in layer.getFeatures():
-            geom = feat.geometry()
-            val = feat.attribute(field_name)
-            if not geom or geom.isEmpty() or val is None:
-                continue
-            if QgsWkbTypes.geometryType(geom.wkbType()) != QgsWkbTypes.PointGeometry:
-                continue
-            try:
-                p = geom.asPoint()
-                z = float(val)
-                if np.isfinite(p.x()) and np.isfinite(p.y()) and np.isfinite(z):
-                    coords.append([p.x(), p.y()])
-                    vals.append(z)
-            except (TypeError, ValueError):
-                continue
-
-        return np.asarray(coords, dtype=float), np.asarray(vals, dtype=float)
+    def _show_source_info(self, stats, message=""):
+        if not hasattr(self, "lbl_source_info"):
+            return
+        if message:
+            self.lbl_source_info.setText(message)
+        elif stats is None:
+            self.lbl_source_info.setText("")
+        else:
+            text = self.tr("Valid samples: %1 of %2 features").replace("%1", str(stats["used"])).replace("%2", str(stats["total"]))
+            if self.field_cb.isGeometryZ():
+                text += " — " + self.tr("Z from geometry (2D surface kriging)")
+            self.lbl_source_info.setText(text)
 
     def remove_trend(self, coords, vals, trend_type):
         if trend_type == "None" or len(coords) < 6:
@@ -759,69 +962,60 @@ class KrigingDialog(QDialog):
             return vals
 
     def on_calculate_variogram(self):
+        if getattr(self, "_operation_task", None) is not None:
+            return
         coords, vals = self.get_layer_points()
         self.recalculate_lag_parameters()
-
         try:
             max_dist = float(self.txt_max_dist.text().replace(',', '.'))
             lag_width = float(self.txt_lag_size.text().replace(',', '.'))
         except ValueError:
             max_dist, lag_width = 15000.0, 1000.0
-
-        n_lags = self.spin_n_lags.value()
-        counts = None
-
-        if coords is not None and len(coords) >= 2:
-            direction = self.spin_dir.value()
-            tolerance = self.spin_tol.value()
-
-            trend_type = self.cb_trend.currentData() or "None"
-            residuals = self.remove_trend(coords, vals, trend_type)
-
-            res = self.engine.calculate_experimental_variogram(
-                coords, residuals, n_lags=n_lags, max_dist=max_dist,
-                lag_width=lag_width, direction=direction, tolerance=tolerance
-            )
-            if len(res) == 3:
-                lags, gamma, counts = res
-            else:
-                lags, gamma = res[0], res[1]
-                counts = np.random.randint(10, 150, size=len(lags))
-        else:
+        if coords is None or len(coords) < 2:
             self.on_clear_variogram()
-            QMessageBox.warning(self, self.tr("Variogram"), self.tr("Select a valid point layer with numeric values before calculating the variogram."))
+            QMessageBox.warning(self, self.tr("Variogram"), self.tr("Select a valid point or line layer with numeric values before calculating the variogram."))
             return
+        self._configure_engine()
+        engine = copy.deepcopy(self.engine)
+        residuals = self.remove_trend(coords, vals, self.cb_trend.currentData() or "None")
+        args = (self.spin_n_lags.value(), max_dist, lag_width, self.spin_dir.value(), self.spin_tol.value())
+        self._set_operation_busy(True, self.tr("Calculating experimental variogram…"))
+        def operation(report, cancelled):
+            report(5, self.tr("Calculating experimental variogram…"))
+            result = engine.calculate_experimental_variogram(coords, residuals, n_lags=args[0],
+                max_dist=args[1], lag_width=args[2], direction=args[3], tolerance=args[4])
+            report(90, self.tr("Updating variogram plot…"))
+            return result
+        self._start_background_operation(self.tr("Experimental variogram"), operation, self._finish_variogram)
 
+    def _finish_variogram(self, task, success):
+        self._operation_task = None
+        self._set_operation_busy(False, self.tr("Completed") if success else self.tr("Variogram failed"))
+        if not success:
+            if task.error_message and task.error_message != "Operation cancelled.":
+                QMessageBox.critical(self, self.tr("Variogram"), task.error_message)
+            return
+        result = task.result_data
+        lags, gamma, counts = result
         if len(lags) == 0:
             self.on_clear_variogram()
             return
-
         self._configure_engine()
         lags_model = np.insert(lags, 0, 0.0)
         model_y = self.engine.variogram_function(lags_model)
-
         auto_vscale = self.chk_auto_vscale.isChecked()
         if auto_vscale or self.last_y_max is None:
-            self.last_y_max = max(np.max(gamma), np.max(model_y)) * 1.1
-
-        point_size = self.spin_point_size_exp.value()
-        exp_color = self.graph_style("Experimental", "#d62728")
-        mod_color = self.graph_style("Model", "#1f77b4")
-
+            self.last_y_max = max(float(np.max(gamma)), float(np.max(model_y))) * 1.1
+        kwargs = dict(auto_vscale=auto_vscale, y_max_fixed=self.last_y_max, counts=counts,
+            experimental_color=self.graph_style("Experimental", "#d62728"),
+            model_color=self.graph_style("Model", "#1f77b4"), point_size=self.spin_point_size_exp.value())
         if hasattr(self.var_plot, 'update_plot'):
             try:
-                self.var_plot.update_plot(
-                    lags, gamma, lags_model, model_y,
-                    auto_vscale=auto_vscale, y_max_fixed=self.last_y_max,
-                    counts=counts,
-                    experimental_color=exp_color,
-                    model_color=mod_color,
-                    point_size=point_size
-                )
+                self.var_plot.update_plot(lags, gamma, lags_model, model_y, **kwargs)
             except TypeError:
-                self.var_plot.update_plot(
-                    lags, gamma, lags_model, model_y
-                )
+                self.var_plot.update_plot(lags, gamma, lags_model, model_y)
+        self._progress_callback(100)
+        self.progress_label_bottom.setText(self.tr("Completed"))
 
     def on_clear_variogram(self):
         self._reset_progress_bars()
@@ -881,14 +1075,6 @@ class KrigingDialog(QDialog):
         btn_cross_lay.addWidget(self.btn_clear_cross)
 
         left_lay.addLayout(btn_cross_lay)
-
-        self.progress_label = QLabel(self.tr("Process progress"))
-        self.progress_bar_options = QProgressBar()
-        self.progress_bar_options.setRange(0, 100)
-        self.progress_bar_options.setValue(0)
-        self.progress_bar_options.setTextVisible(True)
-        left_lay.addWidget(self.progress_label)
-        left_lay.addWidget(self.progress_bar_options)
 
         right_lay = QVBoxLayout()
 
@@ -1012,157 +1198,162 @@ class KrigingDialog(QDialog):
             QMessageBox.critical(self, self.tr("Export Error"), self.tr("Unable to save report:") + f" {exc}")
 
     def _reset_progress_bars(self):
-        for name in ("progress_bar_options", "progress_bar"):
-            bar = getattr(self, name, None)
-            if bar is not None:
-                bar.setValue(0)
-        QCoreApplication.processEvents()
+        """Reset the single persistent progress bar."""
+        if hasattr(self, "progress_bar_bottom"):
+            self.progress_bar_bottom.setValue(0)
+
+    def _schedule_progress_reset(self):
+        """Reset the persistent progress bar after completion, once no task is active."""
+        def reset_when_idle():
+            if getattr(self, "_operation_task", None) is not None:
+                QTimer.singleShot(500, reset_when_idle)
+                return
+            if hasattr(self, "progress_bar_bottom") and self.progress_bar_bottom.value() >= 100:
+                self.progress_bar_bottom.setValue(0)
+                if hasattr(self, "progress_label_bottom"):
+                    self.progress_label_bottom.setText(self.tr("Ready"))
+        QTimer.singleShot(1200, reset_when_idle)
 
     def _progress_callback(self, value):
         value = max(0, min(100, int(value)))
-        if hasattr(self, "progress_bar_options"):
-            self.progress_bar_options.setValue(value)
-        if hasattr(self, "progress_bar"):
-            self.progress_bar.setValue(value)
-        QCoreApplication.processEvents()
+        if hasattr(self, "progress_bar_bottom"):
+            self.progress_bar_bottom.setValue(value)
+        if value >= 100:
+            self._schedule_progress_reset()
+
+    def _fill_dataset_statistics(self, coords, values):
+        """Populate dataset descriptive statistics for X, Y and Z."""
+        coords = np.asarray(coords, dtype=float)
+        values = np.asarray(values, dtype=float)
+        columns = (coords[:, 0], coords[:, 1], values)
+        for col, data in enumerate(columns):
+            data = data[np.isfinite(data)]
+            if data.size == 0:
+                stats = ["—"] * 6
+            else:
+                mean = float(np.mean(data))
+                variance = float(np.var(data, ddof=1)) if data.size > 1 else 0.0
+                stddev = float(np.std(data, ddof=1)) if data.size > 1 else 0.0
+                centered = data - mean
+                skewness = (float(np.mean(centered ** 3)) / (float(np.std(data)) ** 3)
+                            if data.size > 2 and float(np.std(data)) > 0 else 0.0)
+                stats = [
+                    f"{np.min(data):.6g}", f"{np.max(data):.6g}",
+                    f"{mean:.6g}", f"{variance:.6g}",
+                    f"{stddev:.6g}", f"{skewness:.6g}",
+                ]
+            for row, value in enumerate(stats):
+                item = QTableWidgetItem(value)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.tbl_dataset_stats.setItem(row, col, item)
+
+    def _fill_cross_validation_statistics(self, measured, estimated, errors):
+        """Populate summary metrics from finite cross-validation observations."""
+        measured = np.asarray(measured, dtype=float)
+        estimated = np.asarray(estimated, dtype=float)
+        errors = np.asarray(errors, dtype=float)
+        valid = np.isfinite(measured) & np.isfinite(estimated) & np.isfinite(errors)
+        measured, estimated, errors = measured[valid], estimated[valid], errors[valid]
+        if errors.size == 0:
+            values = ["—", "—", "—", "—"]
+        else:
+            correlation = (float(np.corrcoef(measured, estimated)[0, 1])
+                           if errors.size > 1 and np.std(measured) > 0 and np.std(estimated) > 0
+                           else float("nan"))
+            values = [
+                f"{np.mean(errors):.6g}",
+                f"{np.sqrt(np.mean(errors ** 2)):.6g}",
+                f"{np.mean(np.abs(errors)):.6g}",
+                f"{correlation:.6g}" if np.isfinite(correlation) else "—",
+            ]
+        for row, value in enumerate(values):
+            item = QTableWidgetItem(value)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.tbl_cross_stats.setItem(row, 0, item)
 
     def on_calculate_cross_validation(self):
+        if getattr(self, "_operation_task", None) is not None:
+            return
         coords, values = self.get_layer_points()
         if coords is None or len(coords) < 4:
             QMessageBox.warning(self, self.tr("Cross-validation"), self.tr("At least four valid points are required for cross-validation."))
             return
+        self._fill_dataset_statistics(coords, values)
         self._configure_engine()
-        self._reset_progress_bars()
-        try:
-            measured, estimated, errors = self.engine.cross_validate(
-                coords, values, max_neighbors=self.spin_max_pts.value(),
-                progress_callback=self._progress_callback
-            )
-        except Exception as exc:
-            self.progress_bar_options.setValue(0)
-            QMessageBox.critical(self, self.tr("Cross-validation"), self.tr("Cross-validation failed:") + f" {exc}")
-            return
+        engine = copy.deepcopy(self.engine)
+        max_neighbors = self.spin_max_pts.value()
+        self._set_operation_busy(True, self.tr("Cross-validation running…"))
+        def operation(report, cancelled):
+            def progress(v): report(v, self.tr("Cross-validation: %1%").replace("%1", str(v)))
+            return engine.cross_validate(coords, values, max_neighbors=max_neighbors, progress_callback=progress)
+        self._start_background_operation(self.tr("Cross-validation"), operation, self._finish_cross_validation)
 
-        # A completed operation must leave the progress indicators ready for the next run.
-        self._reset_progress_bars()
+    def _finish_cross_validation(self, task, success):
+        self._operation_task = None
+        self._set_operation_busy(False, self.tr("Completed") if success else self.tr("Operation failed or cancelled"))
+        if not success:
+            if task.error_message and task.error_message != "Operation cancelled.":
+                QMessageBox.critical(self, self.tr("Cross-validation"), task.error_message)
+            return
+        measured, estimated, errors = task.result_data
+        self._fill_cross_validation_statistics(measured, estimated, errors)
         if hasattr(self.cross_plot, "update_plot"):
-            self.cross_plot.update_plot(
-                estimated, measured,
+            self.cross_plot.update_plot(estimated, measured,
                 value_color=self.graph_style("Value", "#7f7f7f"),
                 reference_color=self.graph_style("Reference line", "#d62728"),
                 best_fit_color=self.graph_style("Best Fit", "#2ca02c"),
-                point_size=self.spin_value_point_size.value()
-            )
-
+                point_size=self.spin_value_point_size.value())
         self.tbl_cross_val.setRowCount(len(measured))
         for i, (m, e, err) in enumerate(zip(measured, estimated, errors)):
-            item = QTableWidgetItem(str(i + 1))
-            item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.tbl_cross_val.setItem(i, 0, item)
-
-            item = QTableWidgetItem(f"{m:.6g}")
-            item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.tbl_cross_val.setItem(i, 1, item)
-
-            item = QTableWidgetItem(f"{e:.6g}")
-            item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.tbl_cross_val.setItem(i, 2, item)
-
-            item = QTableWidgetItem(f"{err:.6g}")
-            item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.tbl_cross_val.setItem(i, 3, item)
-
-        me = float(np.mean(errors))
-        rms = float(np.sqrt(np.mean(errors ** 2)))
-        mae = float(np.mean(np.abs(errors)))
-        corr = float(np.corrcoef(measured, estimated)[0, 1]) if len(measured) > 1 else float("nan")
-        for i, value in enumerate((me, rms, mae, corr)):
-            item = QTableWidgetItem(f"{value:.6g}")
-            item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            self.tbl_cross_stats.setItem(i, 0, item)
-
-
-        for j, col in enumerate((coords[:, 0], coords[:, 1], values)):
-            item = QTableWidgetItem(f"{np.min(col):.6g}")
-            item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.tbl_dataset_stats.setItem(0, j, item)
-
-            item = QTableWidgetItem(f"{np.max(col):.6g}")
-            item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.tbl_dataset_stats.setItem(1, j, item)
-
-            item = QTableWidgetItem(f"{np.mean(col):.6g}")
-            item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.tbl_dataset_stats.setItem(2, j, item)
-
-            item = QTableWidgetItem(f"{np.var(col):.6g}")
-            item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.tbl_dataset_stats.setItem(3, j, item)
-
-            item = QTableWidgetItem(f"{np.std(col):.6g}")
-            item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.tbl_dataset_stats.setItem(4, j, item)
-
-            centered = col - np.mean(col)
-            sd = np.std(col)
-            skew = np.mean(centered ** 3) / sd ** 3 if sd > 0 else 0.0
-
-            item = QTableWidgetItem(f"{skew:.6g}")
-            item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.tbl_dataset_stats.setItem(5, j, item)
+            for col, value in enumerate((str(i + 1), f"{m:.6g}", f"{e:.6g}", f"{err:.6g}")):
+                item = QTableWidgetItem(value)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.tbl_cross_val.setItem(i, col, item)
 
     def on_clear_cross_validation(self):
-        self._reset_progress_bars()
-        if hasattr(self.cross_plot, 'clear_plot'):
+        """Clear cross-validation results without disturbing a running task."""
+        if getattr(self, "_operation_task", None) is not None:
+            QMessageBox.information(
+                self,
+                self.tr("Cross-validation"),
+                self.tr("Wait for the current operation to finish before clearing results."),
+            )
+            return
+
+        if hasattr(self, "cross_plot") and hasattr(self.cross_plot, "clear_plot"):
             self.cross_plot.clear_plot()
+        if hasattr(self, "tbl_cross_val"):
+            self.tbl_cross_val.setRowCount(0)
+        for name in ("tbl_cross_stats", "tbl_dataset_stats"):
+            table = getattr(self, name, None)
+            if table is not None:
+                table.clearContents()
+        self._reset_progress_bars()
+        if hasattr(self, "progress_label_bottom"):
+            self.progress_label_bottom.setText(self.tr("Ready"))
 
-        self.tbl_cross_val.setRowCount(0)
-        self.tbl_cross_stats.clearContents()
-        self.tbl_dataset_stats.clearContents()
+    def _start_background_operation(self, description, operation, callback):
+        task = _BackgroundOperationTask(description, operation, callback)
+        task.signals.progress.connect(self._on_background_progress)
+        self._operation_task = task
+        QgsApplication.taskManager().addTask(task)
 
-    def toggle_raster_controls(self, enabled):
-        enabled = bool(enabled)
-        self.txt_raster_path.setEnabled(enabled)
-        self.btn_browse_r.setEnabled(enabled)
+    def _on_background_progress(self, value, message):
+        self.progress_label_bottom.setText(message)
+        self.progress_bar_bottom.setValue(value)
+        self._progress_callback(value)
 
-        # Contour vectors are generated from the saved interpolation raster.
-        # Therefore the contour option is only available when raster output is enabled.
-        if hasattr(self, "chk_save_vector"):
-            self.chk_save_vector.setEnabled(enabled)
-            if not enabled and self.chk_save_vector.isChecked():
-                self.chk_save_vector.setChecked(False)
-
-    def toggle_vector_controls(self, enabled):
-        enabled = bool(enabled) and bool(self.chk_save_raster.isChecked())
-        self.txt_vector_path_main.setEnabled(enabled)
-        self.btn_browse_v_main.setEnabled(enabled)
-        self.spin_step_main.setEnabled(enabled)
-        self.txt_vector_path_sec.setEnabled(enabled)
-        self.btn_browse_v_sec.setEnabled(enabled)
-        self.spin_step_sec.setEnabled(enabled)
-
-    def toggle_variance_controls(self, enabled):
-        if hasattr(self, "txt_variance_path"):
-            self.txt_variance_path.setEnabled(bool(enabled))
-        if hasattr(self, "btn_browse_variance"):
-            self.btn_browse_variance.setEnabled(bool(enabled))
-
-    def browse_variance(self):
-        filename, _ = QFileDialog.getSaveFileName(
-            self, self.tr("Save Kriging Variance"), "", self.tr("GeoTIFF (*.tif)")
-        )
-        if filename:
-            self.txt_variance_path.setText(filename)
-
-    def browse_raster(self):
-        filename, _ = QFileDialog.getSaveFileName(self, self.tr("Save Raster File"), "", self.tr("GeoTIFF (*.tif)"))
-        if filename:
-            self.txt_raster_path.setText(filename)
-
-    def browse_vector(self, target_line_edit):
-        filename, _ = QFileDialog.getSaveFileName(self, self.tr("Save Vector File"), "", self.tr("Shapefile (*.shp);;GeoPackage (*.gpkg)"))
-        if filename:
-            target_line_edit.setText(filename)
+    def _set_operation_busy(self, busy, message):
+        self.progress_label_bottom.setText(message)
+        if not busy:
+            if message == self.tr("Completed"):
+                self._progress_callback(100)
+            else:
+                self._reset_progress_bars()
+        for name in ("btn_calc_variogram", "btn_autofit", "btn_calc_cross", "btn_run_interpolation"):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setEnabled(not busy)
 
     def _configure_engine(self):
         drift = self.cb_drift.currentData() or "ordinary"
@@ -1180,142 +1371,194 @@ class KrigingDialog(QDialog):
         self._configure_engine()
 
     def run_kriging_execution(self):
+        """Validate inputs quickly, then run interpolation in a cancellable QgsTask."""
+        if getattr(self, "_operation_task", None) is not None:
+            QMessageBox.information(self, self.tr("Kriging"), self.tr("Another operation is already running."))
+            return
+        if getattr(self, "_kriging_task", None) is not None:
+            QMessageBox.information(self, self.tr("Kriging"), self.tr("A calculation is already running."))
+            return
         self._reset_progress_bars()
         if not any((self.chk_save_raster.isChecked(),
                     self.chk_save_variance.isChecked(),
                     self.chk_save_vector.isChecked())):
-            QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr("Select at least one output option: raster, variance, or contour line.")
-            )
+            QMessageBox.warning(self, self.tr("Warning"), self.tr("Select at least one output option: raster, variance, or contour line."))
             return
-
-        # Contours are created with GDAL from the interpolation GeoTIFF.
-        # Do not allow a contour-only execution because there would be no
-        # raster source from which to generate the vector files.
         if self.chk_save_vector.isChecked() and not self.chk_save_raster.isChecked():
-            QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr(
-                    "Contour vector output requires 'Save Raster File' to be selected. "
-                    "Please enable 'Save Raster File' and specify the raster output path."
-                ),
-            )
+            QMessageBox.warning(self, self.tr("Warning"), self.tr("Contour vector output requires 'Save Raster File' to be selected."))
             return
 
         layer = self.layer_cb.currentLayer()
         field_name = self.field_cb.currentField()
         if not layer or not field_name:
-            QMessageBox.critical(self, self.tr("Error"), self.tr("Please select a valid point layer and Z field."))
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Please select a valid point or line layer and a Z source (numeric field or geometry Z)."))
             return
-
         coords, vals = self.get_layer_points()
         if coords is None or len(coords) < 3:
             QMessageBox.critical(self, self.tr("Error"), self.tr("At least three valid input points are required for kriging."))
             return
 
-        self._configure_engine()
-        self.engine.nugget = float(self.spin_nugget.value()) if hasattr(self, "spin_nugget") else 0.0
-        self._progress_callback(5)
-
         extent = layer.extent()
-        xmin, xmax = extent.xMinimum(), extent.xMaximum()
-        ymin, ymax = extent.yMinimum(), extent.yMaximum()
+        xmin, xmax, ymin, ymax = extent.xMinimum(), extent.xMaximum(), extent.yMinimum(), extent.yMaximum()
         if not (xmax > xmin and ymax > ymin):
             QMessageBox.critical(self, self.tr("Error"), self.tr("The input layer has an invalid extent."))
-            self._progress_callback(0)
             return
-
-        cols, rows = 200, 200
-        xres = (xmax - xmin) / cols
-        yres = (ymax - ymin) / rows
-        gx = xmin + (np.arange(cols, dtype=float) + 0.5) * xres
-        gy = ymax - (np.arange(rows, dtype=float) + 0.5) * yres
-        grid_x, grid_y = np.meshgrid(gx, gy)
-        self._progress_callback(20)
-
-        try:
-            save_variance = bool(getattr(self, "chk_save_variance", None) and self.chk_save_variance.isChecked())
-            grid_z, grid_var = self.engine.fit_and_predict(
-                coords, vals, grid_x, grid_y,
-                return_variance=save_variance,
-                max_neighbors=self.spin_max_pts.value(),
-                progress_callback=lambda v: self._progress_callback(20 + int(v * 0.55))
-            )
-            grid_z = np.asarray(grid_z, dtype=float)
-            grid_var = np.asarray(grid_var, dtype=float)
-        except Exception as exc:
-            QMessageBox.critical(self, self.tr("Kriging Error"), self.tr("Kriging could not be completed:") + f" {exc}")
-            self._progress_callback(0)
-            return
-
-        self._progress_callback(75)
-
         raster_path = self.txt_raster_path.text().strip()
-        variance_path = self.txt_variance_path.text().strip() if hasattr(self, "txt_variance_path") else ""
-
         if self.chk_save_raster.isChecked() and not raster_path:
             QMessageBox.warning(self, self.tr("Warning"), self.tr("Please specify a valid raster output path."))
-            self._progress_callback(0)
             return
-
+        save_variance = bool(self.chk_save_variance.isChecked())
+        variance_path = self.txt_variance_path.text().strip() if hasattr(self, "txt_variance_path") else ""
         if save_variance and not variance_path:
+            base, ext = os.path.splitext(raster_path)
             if raster_path:
-                base, ext = os.path.splitext(raster_path)
                 variance_path = base + "_variance" + (ext or ".tif")
                 self.txt_variance_path.setText(variance_path)
             else:
                 QMessageBox.warning(self, self.tr("Warning"), self.tr("Please specify a valid Kriging variance output path."))
-                self._progress_callback(0)
                 return
 
-        try:
-            if self.chk_save_raster.isChecked():
-                self._write_geotiff(raster_path, grid_z, extent, layer.crs())
-                if self.chk_add_to_project.isChecked():
-                    rlayer = QgsRasterLayer(raster_path, os.path.basename(raster_path))
-                    if rlayer.isValid():
-                        QgsProject.instance().addMapLayer(rlayer)
+        self._configure_engine()
+        self.engine.nugget = float(self.spin_nugget.value()) if hasattr(self, "spin_nugget") else 0.0
+        engine = copy.deepcopy(self.engine)
+        cols = rows = 200
+        gx = xmin + (np.arange(cols, dtype=float) + 0.5) * ((xmax - xmin) / cols)
+        gy = ymax - (np.arange(rows, dtype=float) + 0.5) * ((ymax - ymin) / rows)
+        grid_x, grid_y = np.meshgrid(gx, gy)
 
-            if save_variance:
-                self._write_geotiff(variance_path, grid_var, extent, layer.crs())
-                if self.chk_add_to_project.isChecked():
-                    vrlayer = QgsRasterLayer(variance_path, os.path.basename(variance_path))
-                    if vrlayer.isValid():
-                        QgsProject.instance().addMapLayer(vrlayer)
-        except Exception as exc:
-            QMessageBox.critical(self, self.tr("Error"), self.tr(f"Raster output failed: {exc}"))
-            self._progress_callback(0)
-            return
-
-        self._progress_callback(85)
-
-        if self.chk_save_vector.isChecked() and self.chk_save_raster.isChecked():
-            for path, interval in (
+        self._kriging_context = {
+            "raster_path": raster_path, "variance_path": variance_path,
+            "save_raster": self.chk_save_raster.isChecked(),
+            "save_variance": save_variance, "save_vector": self.chk_save_vector.isChecked(),
+            "add_to_project": self.chk_add_to_project.isChecked(),
+            "extent": extent, "crs": layer.crs(),
+            "vector_outputs": [
                 (self.txt_vector_path_main.text().strip(), self.spin_step_main.value()),
-                (self.txt_vector_path_sec.text().strip(), self.spin_step_sec.value()),
-            ):
-                if not path:
-                    continue
-                try:
-                    processing.run("gdal:contour", {
-                        "INPUT": raster_path, "BAND": 1,
-                        "INTERVAL": interval, "FIELD_NAME": "ELEV",
-                        "OUTPUT": path
-                    })
-                    if self.chk_add_to_project.isChecked():
-                        vlayer = QgsVectorLayer(path, os.path.basename(path), "ogr")
-                        if vlayer.isValid():
-                            QgsProject.instance().addMapLayer(vlayer)
-                except Exception as exc:
-                    QMessageBox.warning(self, self.tr("Warning"), self.tr("Contour generation failed:") + f" {exc}")
-
-        self._reset_progress_bars()
-        QMessageBox.information(
-            self, self.tr("Completed"), self.tr("Kriging completed successfully.")
+                (self.txt_vector_path_sec.text().strip(), self.spin_step_sec.value())
+            ]
+        }
+        self.progress_label_bottom.setText(self.tr("Calculating kriging grid…"))
+        self.progress_bar_bottom.setValue(0)
+        self.btn_run_interpolation.setEnabled(False)
+        task = _KrigingGridTask(
+            self.tr("Kriging interpolation"), engine, coords, vals, grid_x, grid_y,
+            save_variance, self.spin_max_pts.value(), self._on_kriging_task_finished
         )
+        task.progress_signal.progress.connect(self._on_background_progress)
+        self._kriging_task = task
+        QgsApplication.taskManager().addTask(task)
+
+    def _on_kriging_task_finished(self, task, success):
+        self.btn_run_interpolation.setEnabled(True)
+        self._kriging_task = None
+        ctx = self._kriging_context
+        if not success:
+            self.progress_label_bottom.setText(self.tr("Calculation failed or cancelled"))
+            self.progress_bar_bottom.setValue(0)
+            if task.error_message and task.error_message != "Operation cancelled.":
+                QMessageBox.critical(self, self.tr("Kriging Error"), task.error_message)
+            return
+        # Raster writing and contour generation are expensive too: do them in a
+        # second background task. Only adding layers/messages happens on the GUI thread.
+        grid_z = np.asarray(task.predictions, dtype=np.float32)
+        grid_var = np.asarray(task.variances, dtype=np.float32)
+        extent = ctx["extent"]
+        extent_values = (extent.xMinimum(), extent.xMaximum(), extent.yMinimum(), extent.yMaximum())
+        crs_wkt = ctx["crs"].toWkt() if ctx["crs"] and ctx["crs"].isValid() else ""
+        output_ctx = dict(ctx)
+        output_ctx["extent_values"] = extent_values
+        output_ctx["crs_wkt"] = crs_wkt
+        self._set_operation_busy(True, self.tr("Writing raster and contour outputs…"))
+        def operation(report, cancelled):
+            outputs = []
+            if output_ctx["save_raster"]:
+                report(5, self.tr("Writing interpolated raster…"))
+                self._write_geotiff_values(
+                    output_ctx["raster_path"], grid_z, extent_values, crs_wkt,
+                    progress_callback=lambda fraction: report(
+                        5 + int(20 * fraction), self.tr("Writing interpolated raster…")
+                    ), cancelled=cancelled,
+                )
+                outputs.append(("raster", output_ctx["raster_path"]))
+            if output_ctx["save_variance"]:
+                report(30, self.tr("Writing variance raster…"))
+                self._write_geotiff_values(
+                    output_ctx["variance_path"], grid_var, extent_values, crs_wkt,
+                    progress_callback=lambda fraction: report(
+                        30 + int(15 * fraction), self.tr("Writing variance raster…")
+                    ), cancelled=cancelled,
+                )
+                outputs.append(("raster", output_ctx["variance_path"]))
+            if output_ctx["save_vector"]:
+                for i, (path, interval) in enumerate(output_ctx["vector_outputs"]):
+                    if cancelled():
+                        raise RuntimeError("Operation cancelled.")
+                    if not path:
+                        continue
+                    report(50 + i * 20, self.tr("Generating contour lines…"))
+                    processing.run("gdal:contour", {"INPUT": output_ctx["raster_path"], "BAND": 1,
+                        "INTERVAL": float(interval), "FIELD_NAME": "ELEV", "OUTPUT": path})
+                    outputs.append(("vector", path))
+            report(100, self.tr("Output files completed"))
+            return outputs
+        self._start_background_operation(self.tr("Writing kriging outputs"), operation, self._finish_output_task)
+        self._output_ctx = output_ctx
+
+    def _finish_output_task(self, task, success):
+        ctx = getattr(self, "_output_ctx", {})
+        self._operation_task = None
+        self._set_operation_busy(False, self.tr("Completed") if success else self.tr("Output failed"))
+        if not success:
+            if task.error_message and task.error_message != "Operation cancelled.":
+                QMessageBox.critical(self, self.tr("Output error"), task.error_message)
+            return
+        if ctx.get("add_to_project"):
+            for kind, path in task.result_data or []:
+                if kind == "raster":
+                    layer = QgsRasterLayer(path, os.path.basename(path))
+                else:
+                    layer = QgsVectorLayer(path, os.path.basename(path), "ogr")
+                if layer.isValid():
+                    QgsProject.instance().addMapLayer(layer)
+        self.progress_bar_bottom.setValue(100)
+        self.progress_label_bottom.setText(self.tr("Completed"))
+        QMessageBox.information(self, self.tr("Kriging"), self.tr("Kriging completed successfully."))
+
+    @staticmethod
+    def _write_geotiff_values(path, array, extent_values, crs_wkt,
+                              progress_callback=None, cancelled=None):
+        """Write GeoTIFF by row chunks to report progress and support cancellation."""
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        xmin, xmax, ymin, ymax = extent_values
+        rows, cols = array.shape
+        driver = gdal.GetDriverByName("GTiff")
+        if driver is None:
+            raise RuntimeError("The GDAL GeoTIFF driver is not available.")
+        ds = driver.Create(path, cols, rows, 1, gdal.GDT_Float32,
+                           options=["COMPRESS=DEFLATE", "TILED=YES", "BIGTIFF=IF_SAFER"])
+        if ds is None:
+            raise RuntimeError(f"Unable to create '{path}'.")
+        try:
+            ds.SetGeoTransform((xmin, (xmax-xmin)/cols, 0.0, ymax, 0.0, -(ymax-ymin)/rows))
+            if crs_wkt:
+                ds.SetProjection(crs_wkt)
+            band = ds.GetRasterBand(1)
+            nodata = -3.4028235e38
+            band.SetNoDataValue(nodata)
+            data = np.asarray(array, dtype=np.float32)
+            data = np.where(np.isfinite(data), data, nodata)
+            chunk_rows = max(1, min(128, rows // 20 or 1))
+            for yoff in range(0, rows, chunk_rows):
+                if cancelled and cancelled():
+                    raise RuntimeError("Operation cancelled.")
+                yend = min(rows, yoff + chunk_rows)
+                band.WriteArray(data[yoff:yend, :], 0, yoff)
+                if progress_callback:
+                    progress_callback(yend / max(rows, 1))
+            band.FlushCache()
+            ds.FlushCache()
+        finally:
+            ds = None
 
     def _write_geotiff(self, path, array, extent, crs):
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -1339,6 +1582,104 @@ class KrigingDialog(QDialog):
         band.FlushCache()
         ds.FlushCache()
         ds = None
+
+
+    def browse_raster(self):
+        """Choose the destination GeoTIFF path without starting any processing."""
+        current = self.txt_raster_path.text().strip()
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            self.tr("Save interpolated raster"),
+            current or os.path.join(os.path.expanduser("~"), "kriging_result.tif"),
+            self.tr("GeoTIFF raster (*.tif *.tiff);;All files (*.*)")
+        )
+        if filename:
+            if not filename.lower().endswith((".tif", ".tiff")):
+                filename += ".tif"
+            self.txt_raster_path.setText(filename)
+
+    def browse_variance(self):
+        """Choose the destination GeoTIFF path for kriging variance."""
+        current = self.txt_variance_path.text().strip()
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            self.tr("Save kriging variance"),
+            current or os.path.join(os.path.expanduser("~"), "kriging_variance.tif"),
+            self.tr("GeoTIFF raster (*.tif *.tiff);;All files (*.*)")
+        )
+        if filename:
+            if not filename.lower().endswith((".tif", ".tiff")):
+                filename += ".tif"
+            self.txt_variance_path.setText(filename)
+
+    def browse_vector(self, target_edit):
+        """Choose the destination file for a contour vector layer."""
+        current = target_edit.text().strip()
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            self.tr("Save contour lines"),
+            current or os.path.join(os.path.expanduser("~"), "contours.gpkg"),
+            self.tr("GeoPackage (*.gpkg);;ESRI Shapefile (*.shp);;All files (*.*)")
+        )
+        if filename:
+            lower = filename.lower()
+            if not lower.endswith((".gpkg", ".shp")):
+                filename += ".gpkg"
+            target_edit.setText(filename)
+
+    def toggle_raster_controls(self, checked):
+        """Enable or disable raster export controls."""
+        checked = bool(checked)
+        for name in ("txt_raster_path", "btn_browse_r"):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setEnabled(checked)
+
+        # Variance is a raster output too, so it cannot be saved without the
+        # primary raster output being enabled.
+        variance_check = getattr(self, "chk_save_variance", None)
+        if variance_check is not None:
+            variance_check.setEnabled(checked)
+            if not checked:
+                variance_check.setChecked(False)
+
+        self.toggle_variance_controls(
+            checked and bool(variance_check and variance_check.isChecked())
+        ) if variance_check is not None else None
+
+        vector_check = getattr(self, "chk_save_vector", None)
+        if vector_check is not None:
+            vector_check.setEnabled(checked)
+            if not checked:
+                vector_check.setChecked(False)
+        self.toggle_vector_controls(
+            checked and bool(vector_check and vector_check.isChecked())
+        ) if vector_check is not None else None
+
+    def toggle_variance_controls(self, checked):
+        """Enable the optional kriging-variance output path."""
+        enabled = bool(checked) and bool(
+            getattr(self, "chk_save_raster", None)
+            and self.chk_save_raster.isChecked()
+        )
+        for name in ("txt_variance_path", "btn_browse_variance"):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setEnabled(enabled)
+
+    def toggle_vector_controls(self, checked):
+        """Enable contour controls only when raster output is enabled."""
+        enabled = bool(checked) and bool(
+            getattr(self, "chk_save_raster", None)
+            and self.chk_save_raster.isChecked()
+        )
+        for name in (
+            "txt_vector_path_main", "btn_browse_v_main", "spin_step_main",
+            "txt_vector_path_sec", "btn_browse_v_sec", "spin_step_sec",
+        ):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setEnabled(enabled)
 
     def setup_export_tab(self):
         layout = QVBoxLayout(self.tab_export)
@@ -1431,10 +1772,6 @@ class KrigingDialog(QDialog):
 
         box_process = QGroupBox(self.tr("Kriging Execution"))
         lay_p = QVBoxLayout(box_process)
-
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setValue(0)
-        lay_p.addWidget(self.progress_bar)
 
         self.btn_run_interpolation = QPushButton(self.tr("Run Kriging and Create Outputs"))
         self.btn_run_interpolation.setStyleSheet(self.unified_btn_style)

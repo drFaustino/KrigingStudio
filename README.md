@@ -485,3 +485,13 @@ Kriging Studio is a scientific and geostatistical analysis tool. The quality of 
 Cross-validation and uncertainty outputs should be used as diagnostic tools and interpreted together with knowledge of the study area and the underlying physical or environmental process.
 
 The software does not replace professional geostatistical analysis or domain-specific validation where results are used for scientific, engineering, environmental, regulatory, or decision-making purposes.
+
+## Interaces
+
+<img width="997" height="876" alt="img1" src="https://github.com/user-attachments/assets/61f886e1-ae05-499f-8db1-fa356780f0a0" />
+
+
+<img width="999" height="877" alt="img2" src="https://github.com/user-attachments/assets/d2323c7b-3aa9-455c-b7cc-95292246aca8" />
+
+
+<img width="996" height="878" alt="img3" src="https://github.com/user-attachments/assets/ece98423-d803-429d-bbee-91f5911a9c7a" />

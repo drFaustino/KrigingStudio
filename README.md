@@ -417,7 +417,7 @@ The implementation is intended to provide reliable interpolation while keeping m
 
 Current release:
 
-**Kriging Studio 1.2.0**
+**Kriging Studio 1.1.2**
 
 ---
 
@@ -449,15 +449,6 @@ Current release:
 
 ## 1.1.2
 
-- **Added**
-    - Support for line layers with numeric elevation attributes, including contour lines, as input data for variogram analysis and kriging interpolation.
-    - Automatic extraction of line vertices and assignment of elevation values from the corresponding attribute field.
-
-- **Improved**
-    - Enhanced input layer validation and error handling.
-    - Updated user messages to clarify supported geometry types and elevation field requirements.
-    - Improved handling of invalid elevation values and duplicate samples.
-
 - **Fixed**
     - Fixed an issue preventing line layers from being used for variogram fitting and kriging interpolation.
     - Added a warning message when polygon layers are selected, as polygon geometries are not supported.
@@ -474,6 +465,10 @@ Current release:
 ## Author
 
 **Dr. Geol. Faustino Cetraro**
+
+Developed and maintained by [drFaustino](https://github.com/drFaustino).
+
+Thanks to [@anders-dc](https://github.com/anders-dc) for suggesting the geometry Z coordinate option, introduced in version 1.1.2.
 
 ---
 
